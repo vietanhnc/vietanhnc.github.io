@@ -377,11 +377,11 @@
   // Thêm đồ hoàng kim vào hành trang. CÒN PHẢI commit() để ghi.
   //   addGold(0)                         theo chỉ số i từ listGold()
   //   addGold('Phục Ma Tử Kim Côn')      theo tên (phải duy nhất)
-  //   addGold(0, { max:false, enh:9 })   affix random trong khoảng như game, +9
-  //   addGold(0, { count:3 })            thêm 3 món
-  // opts: max (true = affix lấy giá trị cao nhất, mặc định), enh, count
+  //   addGold(0, { max:true, enh:9 })    affix luôn lấy giá trị cao nhất, +9
+  //   addGold(0, { count:3 })            thêm 3 món, mỗi món roll affix riêng
+  // opts: max (false = random trong khoảng min..max như game, MẶC ĐỊNH; true = luôn lấy giá trị cao nhất), enh, count
   function addGold(ref, opts) {
-    const o = Object.assign({ max: true, enh: null, count: 1 }, opts || {});
+    const o = Object.assign({ max: false, enh: null, count: 1 }, opts || {});
     const t = findGold(ref); const added = [];
     for (let c = 0; c < Math.max(1, o.count | 0); c++) added.push(pushInv(mkGold(t, o)));
     const it = added[0];
@@ -393,9 +393,9 @@
 
   // Thêm đủ một bộ hoàng kim theo grp (có thể lọc d hoặc môn phái).
   //   addGoldSet(1)                 cả bộ Mộng Long (grp 1)
-  //   addGoldSet(1, { max:false })
+  //   addGoldSet(1, { max:true })       mặc định random trong khoảng như game, max:true để lấy giá trị cao nhất
   function addGoldSet(grp, opts) {
-    const o = Object.assign({ max: true, enh: null }, opts || {});
+    const o = Object.assign({ max: false, enh: null }, opts || {});
     const list = (JX().sets.gold || []).filter(x => x.grp === grp);
     if (!list.length) throw new Error("Không có bộ hoàng kim grp=" + grp);
     const items = list.map(t => pushInv(mkGold(t, o)));
@@ -579,7 +579,7 @@
     "\n  listItems({affix:true})      liệt kê affix (idx / stat id)" +
     "\n  addItem('7:0:3',{s:4,max:true,affix:[12,40]})  →  commit()" +
     "\n  listGold({fac:'wudu',slot:'weapon'})  liệt kê đồ hoàng kim (i / grp)" +
-    "\n  addGold(0,{max:false}) / addGoldSet(1)  →  commit()" +
+    "\n  addGold(0) random trong khoảng · addGold(0,{max:true}) luôn max / addGoldSet(1)  →  commit()" +
     "\n  listKtc() / addKtc('qht',20)          vật phẩm Kỳ Trân Các vào hành trang" +
     "\n  listMat({kind:'ore'}) / addMat('ht',5,10)  nguyên liệu (ht | ore | shard | misc)");
   try { load(); } catch (e) { console.warn("[vldev]", e.message); }
