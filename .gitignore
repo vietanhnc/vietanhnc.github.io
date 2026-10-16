@@ -1,0 +1,39 @@
+# --- Bản sao game đã tải về để đọc/đối chiếu (~18 MB, không phải mã của repo này) ---
+# Gồm cả response Supabase đã lưu (saves/chars/chat/mail...) có thể chứa dữ liệu tài khoản.
+/client/
+*.zip
+
+# --- Kiro (spec, steering, settings cục bộ) ---
+/.kiro/
+
+# --- Bí mật / cấu hình cục bộ ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Node (nếu sau này thêm công cụ/test) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+
+# --- Log, file tạm, build ---
+*.log
+*.tmp
+*.bak
+*.swp
+dist/
+.cache/
+
+# --- Hệ điều hành ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.code-workspace

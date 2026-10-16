@@ -4,13 +4,19 @@
 * Dán vào F12 → Console. Hàm có sẵn ở global, KHÔNG cần gõ "await":
 *   set({ gold:1e9, lvl:99 })   sửa trường gốc trong save (nhớ commit())
 *   attr({ str:500 })           sửa điểm thuộc tính (nhớ commit())
-*   commit()                    ký lại + ghi local + đẩy cloud + reload
+*   commit()                    ký lại + đẩy cloud + ghi local + reload
+*                               (set/attr/add* chỉ sửa bản nháp trong console, PHẢI commit() mới có tác dụng)
 *   knb(100000)                 nạp KNB qua knb_sync (cộng thẳng)
 *   knb(50,'bkh')               bịa 50 boss thế giới → server quay số ra KNB
+*
+* Lưu ý: game tự lưu đè save khi reload (pagehide). commit() đăng ký thêm listener
+* ghi lại bản đã sửa SAU lượt autosave của game để bản sửa không bị mất.
+* Chỉ dùng trên tài khoản/môi trường đã được chủ game cho phép.
 * ========================================================================== */
 (function () {
   "use strict";
-  let SALT = "vlidle#f2|2026-10-13:", FMT = 2; // tự hiệu chỉnh lại ở cuối
+  // Phải khớp salt/format trong app.js (biến Ay / Za, build 826). Đổi salt ⇒ sửa 2 hằng này.
+  const SALT = "vlidle#f2|2026-10-13:", FMT = 2;
 
   // --- ký / mở save {f,d,h} ------------------------------------------------
   function og(A) {
@@ -86,27 +92,37 @@
     for (let n = 0; n < 3; n++) { try { if (localStorage.getItem(keyOf(n))) return n; } catch {} }
     return 0;
   }
-  const S = { slot: activeSlot(), state: null, get key() { return keyOf(this.slot); } };
+  // S.state = bản nháp đang sửa; S.raw = chuỗi localStorage lúc nạp; S.dirty = đã có sửa chưa commit.
+  const S = { slot: activeSlot(), state: null, raw: null, dirty: false, get key() { return keyOf(this.slot); } };
+  const readRaw = () => { try { return localStorage.getItem(S.key); } catch { return null; } };
   function load() {
-    let raw = null; try { raw = localStorage.getItem(S.key); } catch {}
+    const raw = readRaw();
     if (!raw) throw new Error("Không có save ở " + S.key + " — vào game tới nhân vật trước.");
     const r = unpack(raw);
-    if (!r.ok) console.warn("[vldev] Hash save hiện tại không khớp (salt đổi? chạy sẽ tự hiệu chỉnh).");
-    S.state = r.state;
+    if (!r.ok) console.warn("[vldev] Hash save hiện tại không khớp với SALT/FMT của script — salt trong app.js có thể đã đổi, commit() sẽ ký sai.");
+    S.state = r.state; S.raw = raw; S.dirty = false;
     return S.state;
   }
-  const data = () => S.state || load();
+  // Chưa có sửa dở ⇒ luôn bám theo save mới nhất (game autosave liên tục), tránh commit đè bằng bản cũ.
+  function data() {
+    if (S.state && !S.dirty) {
+      S.slot = activeSlot();
+      if (readRaw() !== S.raw) return load();
+    }
+    return S.state || load();
+  }
+  const edit = () => { const d = data(); S.dirty = true; return d; };
 
   // --- các hàm chính -------------------------------------------------------
   function set(patch) {
-    const d = data();
     if (!patch || typeof patch !== "object") throw new Error("set({ gold:1e9, lvl:99 })");
+    const d = edit();
     Object.assign(d, patch);
     console.log("[vldev] set", patch, "→ gọi commit() để ghi.");
     return d;
   }
   function attr(patch) {
-    const d = data();
+    const d = edit();
     d.attr = Object.assign({ str: 0, dex: 0, vit: 0, eng: 0 }, d.attr || {}, patch || {});
     console.log("[vldev] attr =", d.attr, "→ gọi commit() để ghi.");
     return d.attr;
@@ -140,32 +156,86 @@
     state.cloudAt = Date.parse(updated);          // tạm — sẽ chỉnh theo server bên dưới
     let stash = null; try { stash = localStorage.getItem("jxidle_stash"); } catch {}
     const row = { owner: sub, slot: S.slot, name: state.name || "", lvl: state.lvl | 0, fac: state.fac, data: JSON.stringify({ v: 2, d: pack(state), k: stash }), updated };
+    // Giống upsert của game (ZA): gửi kèm av = số build client (lấy từ app.js?v=NNN đang chạy).
+    // 'sid' nằm trong closure của app.js nên không lấy được → bỏ qua (cột giữ nguyên giá trị cũ khi upsert).
+    const av = clientVer(); if (av) row.av = av;
     // return=representation để ĐỌC LẠI 'updated' server thật sự lưu → đồng bộ cloudAt,
     // tránh lệch giờ máy (client chậm hơn server > 5s) khiến game tải cloud & reload lần 2.
-    const res = await sbFetch("/rest/v1/saves?on_conflict=owner,slot&select=updated", {
+    const post = () => sbFetch("/rest/v1/saves?on_conflict=owner,slot&select=updated", {
       method: "POST",
       prefer: "resolution=merge-duplicates,return=representation",
       body: [row],
     });
+    let res;
+    try { res = await post(); }
+    catch (e) { if (row.av && /'av' column|"av"|column av\b/i.test(e.message)) { delete row.av; res = await post(); } else throw e; }
     const srv = Array.isArray(res) && res[0] && res[0].updated;
     if (srv) state.cloudAt = Date.parse(srv);     // cloudAt local == updated server ⇒ Vr()=false
     console.log("[vldev] pushCloud OK — cloudAt", state.cloudAt, srv ? "(theo server)" : "(theo client, không đọc lại được)");
     return state.cloudAt;
   }
 
-  async function commit() {
-    const d = data();
+  // Build client = tham số ?v=NNN của <script src="app.js?v=NNN"> (game gửi cùng số này làm 'av').
+  function clientVer() {
+    try {
+      const el = document.querySelector('script[src*="app.js"]');
+      const m = el && /[?&]v=(\d+)/.exec(el.src);
+      return m ? +m[1] : null;
+    } catch { return null; }
+  }
+
+  // Lý do server từ chối upsert, dịch ra dạng dễ hiểu.
+  function cloudWhy(msg) {
+    if (/JX_OLD/.test(msg)) return "JX_OLD — server coi client là bản cũ (thiếu/sai av), hãy tải lại trang game rồi thử lại";
+    if (/JX_SRV/.test(msg)) return "JX_SRV — tài khoản đang ở chế độ máy chủ game (view); sửa save trình duyệt không có tác dụng";
+    if (/JX_SESS/.test(msg)) return "JX_SESS — phiên khác đang giữ nhân vật này";
+    if (/cấp cao hơn ở ô này/.test(msg)) return "server đang có nhân vật cấp cao hơn ở ô này, không cho ghi đè bằng cấp thấp hơn";
+    return msg;
+  }
+
+  // Game luôn autosave (pagehide / visibilitychange) bằng nhân vật đang chạy trong bộ nhớ ngay khi
+  // reload ⇒ ghi đè bản vừa sửa. Listener đăng ký SAU listener của game nên chạy sau nó và ghi lại
+  // bản đã ký. Chỉ dùng addEventListener + localStorage.setItem trên khóa save của chính nó.
+  function guardReload(raw, key, slot) {
+    const rewrite = () => { try { localStorage.setItem(key, raw); localStorage.setItem("jxidle_slot", String(slot)); } catch {} };
+    const hooks = [[window, "pagehide"], [document, "visibilitychange"]];
+    hooks.forEach(([t, ev]) => t.addEventListener(ev, rewrite));
+    // Nếu reload không xảy ra thì gỡ, tránh đè tiến trình sau này.
+    setTimeout(() => hooks.forEach(([t, ev]) => t.removeEventListener(ev, rewrite)), 10000);
+  }
+
+  // commit({ cloud:false }) = chỉ ghi local, không đẩy cloud.
+  async function commit(opts) {
+    if (!S.state || !S.dirty) { console.warn("[vldev] Chưa có thay đổi nào (set/attr/add*) để commit."); return; }
+    const o = Object.assign({ cloud: true }, opts || {});
+    const d = S.state, key = S.key, slot = S.slot;
     d.cloudAt = Date.now();
     const sub = authInfo().sub; if (sub) d.netOwner = sub;
-    try { await pushCloud(d); } catch (e) { console.warn("[vldev] pushCloud lỗi → chỉ ghi local:", e.message); }
+
+    let cloud = "local";
+    if (o.cloud) {
+      try { await pushCloud(d); cloud = "ok"; }
+      catch (e) {
+        cloud = "fail";
+        console.warn("[vldev] Cloud KHÔNG nhận: " + cloudWhy(e.message) + "\n  → chỉ ghi local; game có thể tải lại bản server khi khởi động và làm mất thay đổi.");
+      }
+    }
+
     const raw = pack(d);
     if (!unpack(raw).ok) throw new Error("Hash vừa ký không khớp — KHÔNG ghi.");
     try {
-      localStorage.setItem(S.key + "_bak", localStorage.getItem(S.key) || "");
-      localStorage.setItem(S.key, raw);
-      localStorage.setItem("jxidle_slot", String(S.slot));
+      const old = localStorage.getItem(key);
+      if (old) localStorage.setItem(key + "_bak", old);
+      localStorage.setItem(key, raw);
+      localStorage.setItem("jxidle_slot", String(slot));
+      // đọc lại để chắc chắn đã ghi đúng
+      const back = localStorage.getItem(key);
+      if (back !== raw) throw new Error("đọc lại không khớp");
     } catch (e) { throw new Error("Không ghi được localStorage: " + e.message); }
-    console.log("[vldev] Đã ghi + ký lại. Reload…");
+
+    guardReload(raw, key, slot);
+    console.log("[vldev] Đã ghi + ký lại (cloud: " + (cloud === "ok" ? "OK" : cloud === "fail" ? "LỖI, chỉ local" : "bỏ qua") + "). Reload…");
+    S.dirty = false;
     location.reload();
   }
 
@@ -246,7 +316,6 @@
   function addItem(id, opts) {
     const o = Object.assign({ s: null, lvl: null, enh: null, r: null, max: true, affixMax: null, affix: [], mag: null }, opts || {});
     const affixMax = o.affixMax != null ? !!o.affixMax : !!o.max;
-    const d = data();
     const { d: slotD, t } = findTpl(id);
     const J = JX();
     const item = {
@@ -264,10 +333,7 @@
     }
     if (o.enh != null) item.enh = o.enh | 0;
     item.r = o.r != null ? o.r : (item.mag.length ? 1 : 0);
-    // uid: dùng bộ đếm state.uid như game (D.uid++)
-    let uid = d.uid | 0; if (uid <= 0) uid = (d.inv || []).reduce((m, x) => Math.max(m, (x && x.uid) | 0), 0) + 1;
-    item.uid = uid; d.uid = uid + 1;
-    d.inv = d.inv || []; d.inv.push(item);
+    pushInv(item);
     console.log("[vldev] +item", item.n, "(" + SLOT[slotD] + ", lvl " + item.lvl + ", " + item.mag.length + " affix) uid=" + item.uid, "→ commit() để ghi.");
     console.log("  base:", item.base.map(b => statName(b[0]) + "=" + b[1]).join(", "),
       item.mag.length ? "\n  affix: " + item.mag.map(a => statName(a.a) + "=" + a.p.filter(v => v !== -1).join("/")).join(", ") : "");
@@ -355,7 +421,7 @@
 
   // uid dùng bộ đếm state.uid như game (D.uid++).
   function pushInv(item) {
-    const d = data();
+    const d = edit();
     let uid = d.uid | 0; if (uid <= 0) uid = (d.inv || []).reduce((m, x) => Math.max(m, (x && x.uid) | 0), 0) + 1;
     item.uid = uid; d.uid = uid + 1;
     d.inv = d.inv || []; d.inv.push(item);
@@ -450,7 +516,7 @@
     const n = count == null ? 1 : Math.floor(+count);
     if (!(n > 0)) throw new Error("addKtc(key[, count > 0])");
     const def = findKtc(key);
-    const d = data(); d.inv = d.inv || [];
+    const d = edit(); d.inv = d.inv || [];
     const cap = typeof globalThis.INV_MAX === "number" ? globalThis.INV_MAX : Infinity;
     let left = n;
     const top = d.inv.find(a => a && a.ktc && a.ktc.k === def[0] && a.ktc.c < KTC_MAX);
@@ -529,7 +595,7 @@
     const n = count == null ? 1 : Math.trunc(+count);
     if (!Number.isFinite(n) || n === 0) throw new Error("addMat(kind, key[, count])  — count khác 0");
     const { k, label } = matKey(kind, key);
-    const d = data(); const m = d.mats || (d.mats = {});
+    const d = edit(); const m = d.mats || (d.mats = {});
     for (const g of ["ht", "ore", "shard", "misc"]) m[g] = m[g] || {};
     m[kind][k] = (m[kind][k] || 0) + n;
     if (m[kind][k] <= 0) delete m[kind][k];
@@ -554,24 +620,14 @@
     return out;
   }
 
-  // --- tự hiệu chỉnh salt theo app.js live (để commit ký đúng) -------------
-  async function calibrate() {
-    try { if (unpack(localStorage.getItem(S.key)).ok) return; } catch {}
-    try {
-      const el = document.querySelector('script[src*="app.js"]');
-      const src = await (await fetch((el && el.src) || "app.js", { cache: "no-store" })).text();
-      const m = src.match(/DM\s*=\s*"([^"]*)"/);
-      if (m) { SALT = m[1]; console.log("[vldev] salt hiệu chỉnh:", JSON.stringify(SALT)); }
-    } catch (e) { console.warn("[vldev] không đọc được app.js:", e.message); }
-  }
-
   // --- expose global -------------------------------------------------------
-  const api = { dump, set, attr, knb, listItems, addItem, listGold, addGold, addGoldSet, listKtc, addKtc, listMat, addMat, commit, load, rpc, pushCloud, _state: () => S.state, get _salt() { return SALT; } };
+  const api = { dump, set, attr, knb, listItems, addItem, listGold, addGold, addGoldSet, listKtc, addKtc, listMat, addMat, commit, load, _state: () => S.state };
   for (const k of ["dump", "set", "attr", "knb", "listItems", "addItem", "listGold", "addGold", "addGoldSet", "listKtc", "addKtc", "listMat", "addMat", "commit"]) { try { window[k] = api[k]; } catch {} }
   try { window.vldev = api; } catch {}
 
   console.log("%c[vldev] sẵn sàng (không cần await):", "color:#7fe08a;font-weight:bold",
     "\n  dump()                       xem các trường để build set()/attr()" +
+    "\n  commit()                     ghi tất cả thay đổi (commit({cloud:false}) = chỉ local)" +
     "\n  set({gold:1e9, lvl:99})      →  commit()" +
     "\n  attr({str:500})              →  commit()" +
     "\n  knb(100000) / knb(50,'bkh')" +
@@ -583,6 +639,5 @@
     "\n  listKtc() / addKtc('qht',20)          vật phẩm Kỳ Trân Các vào hành trang" +
     "\n  listMat({kind:'ore'}) / addMat('ht',5,10)  nguyên liệu (ht | ore | shard | misc)");
   try { load(); } catch (e) { console.warn("[vldev]", e.message); }
-  calibrate();
 })();
  
