@@ -23,7 +23,10 @@
     button.mini { padding:3px 8px; font-size:12px; }
     button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
     button.bad { border-color:var(--bad); color:var(--bad); }
-    .tabs { display:flex; gap:8px; margin:16px 0 12px; }
+    html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+    button, summary { touch-action:manipulation; }
+    .tabs { display:flex; gap:8px; margin:16px 0 12px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; scrollbar-width:thin; }
+    .tab { flex:0 0 auto; white-space:nowrap; }
     .tab.active { background:var(--accent); color:white; border-color:var(--accent); }
     .status { color:var(--muted); margin-left:auto; }
     .table-wrap { overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:10px; max-height:70vh; }
@@ -68,6 +71,46 @@
     .b-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
     .copied { color:var(--ok); font-size:13px; }
     .badge.missing { border-color:var(--warn); color:var(--warn); }
+    .b-grid input, .b-grid select { width:100%; min-width:0; }
+
+    /* Hướng dẫn có thể thu gọn */
+    details.help { margin:0 0 12px; border:1px solid var(--line); border-radius:8px; padding:0 12px; }
+    details.help > summary { cursor:pointer; padding:9px 0; font-weight:600; color:var(--accent); }
+    details.help ul { margin:0 0 10px; padding-left:20px; }
+    details.help li { margin:5px 0; color:var(--muted); font-size:13px; }
+
+    /* Điện thoại / màn hình hẹp */
+    @media (max-width: 700px) {
+      main { padding:12px; }
+      h1 { font-size:21px; }
+      .subtitle { margin-bottom:12px; font-size:13px; }
+      .toolbar { padding:10px; gap:8px; }
+      .toolbar > input[type=search] { flex:1 1 100%; min-width:0; }
+      .toolbar > select { flex:1 1 140px; min-width:0; }
+      .toolbar > #clear { flex:0 0 auto; }
+      .toolbar > #copyScript { flex:1 1 100%; }
+      .status { margin-left:0; flex-basis:100%; }
+      /* 16px để iOS không tự phóng to khi chạm vào ô nhập */
+      input, select, textarea { font-size:16px; }
+      button { min-height:40px; }
+      button.mini { min-height:34px; padding:5px 10px; }
+      input[type=file] { max-width:100%; }
+      .table-wrap { max-height:65vh; max-height:65dvh; }
+      th, td { padding:7px 8px; }
+      td.name, td.description, td.base { min-width:150px; }
+      details.builder { padding:0 10px 10px; }
+      details.builder > summary { font-size:15px; }
+      .b-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }
+      .b-checks label { align-items:flex-start; }
+      .b-checks input[type=checkbox] { margin-top:4px; flex:0 0 auto; }
+      .b-actions button { flex:1 1 calc(50% - 8px); }
+      .b-actions button.primary { flex-basis:100%; }
+      li.chip input[type=number] { width:90px; }
+      textarea.out { font-size:12px; min-height:110px; }
+    }
+    @media (max-width: 380px) {
+      .b-grid { grid-template-columns:minmax(0, 1fr); }
+    }
   </style>
 </head>
 <body>
@@ -99,45 +142,53 @@
   <!-- ============ Trình dựng lệnh addItem ============ -->
   <details class="builder" id="builder" open>
     <summary>Dựng lệnh <code>addItem()</code> cho vlidle-dev-console.js</summary>
-    <p class="hint">Vật phẩm chung (Kỳ Trân Các, Huyền Tinh, đá, mảnh, misc): bấm <b>Dựng lệnh</b> ở tab Vật phẩm chung rồi nhập số lượng. Đá hậu tố (vị trí lẻ) cần chọn hệ ở ô Hệ. Đồ Hoàng Kim: bấm <b>Dựng lệnh</b> ở tab Gold Items, affix đã cố định theo template nên chỉ cần chọn max/ngẫu nhiên, cường hóa và số lượng. Đồ thường: bấm <b>Dựng lệnh</b> ở một dòng item, rồi sang tab Affixes bấm <b>+ Thêm</b> (tối đa 6 affix). Quy tắc kiểm tra lấy từ cách game roll đồ: affix phải cùng slot (<code>w[d] &gt; 0</code>), cấp affix ≤ cấp item, đúng hệ, không trùng stat; vị trí chẵn là prefix, vị trí lẻ là suffix.</p>
+    <details class="help">
+      <summary>Hướng dẫn dùng trình dựng lệnh</summary>
+      <ul>
+        <li><b>Vật phẩm chung</b> (Kỳ Trân Các, Huyền Tinh, đá, mảnh, misc): bấm <b>Dựng lệnh</b> ở tab Vật phẩm chung rồi nhập số lượng. Đá hậu tố (vị trí lẻ) cần chọn hệ ở ô Hệ.</li>
+        <li><b>Đồ Hoàng Kim</b>: bấm <b>Dựng lệnh</b> ở tab Gold Items. Affix đã cố định theo template nên chỉ cần chọn max/ngẫu nhiên, cường hóa và số lượng.</li>
+        <li><b>Đồ thường</b>: bấm <b>Dựng lệnh</b> ở một dòng item, rồi sang tab Affixes bấm <b>+ Thêm</b> (tối đa 6 affix).</li>
+        <li><b>Quy tắc kiểm tra</b> lấy từ cách game roll đồ: affix phải cùng slot (<code>w[d] &gt; 0</code>), cấp affix ≤ cấp item, đúng hệ, không trùng stat; vị trí chẵn là prefix, vị trí lẻ là suffix.</li>
+      </ul>
+    </details>
 
     <div id="bItem" class="b-item empty-item">Chưa chọn item. Bấm “Dựng lệnh” ở tab Items.</div>
 
     <div class="b-grid">
-      <label>Hệ (<code>s</code>)
+      <label><span>Hệ (<code>s</code>)</span>
         <select id="bSeries">
           <option value="">Mặc định (Kim)</option>
           <option value="0">0 - Kim</option><option value="1">1 - Mộc</option><option value="2">2 - Thủy</option>
           <option value="3">3 - Hỏa</option><option value="4">4 - Thổ</option>
         </select>
       </label>
-      <label>Cấp hiển thị (<code>lvl</code>)
+      <label><span>Cấp hiển thị (<code>lvl</code>)</span>
         <input id="bLvl" type="number" min="1" step="1" placeholder="Theo template">
       </label>
-      <label>Cường hóa (<code>enh</code>)
+      <label><span>Cường hóa (<code>enh</code>)</span>
         <input id="bEnh" type="number" min="0" step="1" placeholder="Không">
       </label>
-      <label>Phẩm/màu (<code>r</code>)
+      <label><span>Phẩm/màu (<code>r</code>)</span>
         <select id="bRarity">
           <option value="">Tự động (1 nếu có affix)</option>
           <option value="0">0 - Trắng</option><option value="1">1 - Lam</option><option value="2">2 - Cam</option>
           <option value="3">3 - Tím</option><option value="4">4 - Vàng</option><option value="5">5 - Lục lam</option>
         </select>
       </label>
-      <label>Giá trị affix (khoảng P)
+      <label><span>Giá trị affix (khoảng P)</span>
         <select id="bAffixRoll">
           <option value="max">Max (luôn lấy lớn nhất)</option>
           <option value="random">Ngẫu nhiên trong khoảng</option>
           <option id="bRollMin" value="min">Min (nhỏ nhất)</option>
         </select>
       </label>
-      <label id="bCountWrap" class="hidden">Số lượng (<code>count</code>)
+      <label id="bCountWrap" class="hidden"><span>Số lượng (<code>count</code>)</span>
         <input id="bCount" type="number" min="1" step="1" placeholder="1">
       </label>
-      <label id="bOreLvlWrap" class="hidden">Cấp đá (1–10)
+      <label id="bOreLvlWrap" class="hidden"><span>Cấp đá (1–10)</span>
         <input id="bOreLvl" type="number" min="1" max="10" step="1" value="1">
       </label>
-      <label>Cách truyền affix
+      <label><span>Cách truyền affix</span>
         <select id="bMode">
           <option value="auto">Tự chọn (khuyên dùng)</option>
           <option value="affix">affix: [idx...]</option>
@@ -192,6 +243,7 @@
     <div class="table-wrap"><table><thead id="commonHead"></thead><tbody id="commonBody"></tbody></table></div>
   </section>
 </main>
+<script>if (matchMedia('(max-width: 700px)').matches) document.getElementById('builder').open = false;</script>
 <script>
   // Trọng số roll theo slot d (0..10) cho từng affix idx, lấy từ JX.affix[idx].w trong data.js.
   // affix.json không có trường này nên nhúng sẵn để kiểm tra affix nào dùng được cho slot nào.
@@ -393,7 +445,7 @@
     if (build.goldIdx == null) $('#bAffixRoll').value = 'random';
     build.goldIdx = i; build.itemId = null; build.commonId = null; build.affixes = [];
     renderBuilder();
-    $('#builder').open = true;
+    openBuilder();
   }
 
   /* ---------------------------------------------------------------
@@ -459,7 +511,7 @@
   function pickCommon(id) {
     build.commonId = id; build.itemId = null; build.goldIdx = null; build.affixes = [];
     renderBuilder();
-    $('#builder').open = true;
+    openBuilder();
   }
 
   function buildCommand(plan) {
@@ -619,7 +671,7 @@
     const item = itemById(id);
     if (item && item.he >= 0) $('#bSeries').value = '';
     renderBuilder();
-    $('#builder').open = true;
+    openBuilder();
   }
 
   function toggleAffix(idx) {
@@ -654,6 +706,13 @@
       area.remove();
       return ok;
     }
+  }
+
+  // Mở trình dựng lệnh; trên điện thoại cuộn lên để thấy ngay lệnh vừa dựng.
+  function openBuilder() {
+    const b = $('#builder');
+    b.open = true;
+    if (matchMedia('(max-width: 700px)').matches) b.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function flash(selector, message) {
