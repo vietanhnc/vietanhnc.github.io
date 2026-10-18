@@ -3,6 +3,7 @@
 * -----------------------------------------------------------------------------
 * Dán vào F12 → Console. Hàm có sẵn ở global, KHÔNG cần gõ "await":
 *   set({ gold:1e9, lvl:99 })   sửa trường gốc trong save (nhớ commit())
+*   set({ "rw.stat.reborn":1 }) khóa có dấu chấm = đi sâu vào object/array ("inv.0.enh" hoặc "inv[0].enh")
 *   attr({ str:500 })           sửa điểm thuộc tính (nhớ commit())
 *   commit()                    ký lại + đẩy cloud + ghi local + reload
 *                               (set/attr/add* chỉ sửa bản nháp trong console, PHẢI commit() mới có tác dụng)
@@ -93,19 +94,24 @@
     return 0;
   }
   // S.state = bản nháp đang sửa; S.raw = chuỗi localStorage lúc nạp; S.dirty = đã có sửa chưa commit.
-  const S = { slot: activeSlot(), state: null, raw: null, dirty: false, get key() { return keyOf(this.slot); } };
+  // S.state = bản nháp; S.raw = chuỗi localStorage lúc nạp; S.base = JSON của bản nháp lúc nạp;
+  // S.dirty = đã sửa qua set/attr/add*. Sửa TẠI CHỖ qua tham chiếu từ dump() không bật S.dirty,
+  // nên "đã sửa dở" còn được nhận ra bằng cách so JSON bản nháp với S.base.
+  const S = { slot: activeSlot(), state: null, raw: null, base: null, dirty: false, get key() { return keyOf(this.slot); } };
   const readRaw = () => { try { return localStorage.getItem(S.key); } catch { return null; } };
+  const changed = () => !!S.state && (S.dirty || JSON.stringify(S.state) !== S.base);
   function load() {
     const raw = readRaw();
     if (!raw) throw new Error("Không có save ở " + S.key + " — vào game tới nhân vật trước.");
     const r = unpack(raw);
     if (!r.ok) console.warn("[vldev] Hash save hiện tại không khớp với SALT/FMT của script — salt trong app.js có thể đã đổi, commit() sẽ ký sai.");
-    S.state = r.state; S.raw = raw; S.dirty = false;
+    S.state = r.state; S.raw = raw; S.dirty = false; S.base = JSON.stringify(r.state);
     return S.state;
   }
-  // Chưa có sửa dở ⇒ luôn bám theo save mới nhất (game autosave liên tục), tránh commit đè bằng bản cũ.
+  // Chưa có sửa dở ⇒ bám theo save mới nhất (game autosave liên tục), tránh commit đè bằng bản cũ.
+  // Đã có sửa dở (kể cả sửa tại chỗ qua dump()) ⇒ giữ nguyên bản nháp, KHÔNG nạp lại.
   function data() {
-    if (S.state && !S.dirty) {
+    if (S.state && !changed()) {
       S.slot = activeSlot();
       if (readRaw() !== S.raw) return load();
     }
@@ -114,11 +120,62 @@
   const edit = () => { const d = data(); S.dirty = true; return d; };
 
   // --- các hàm chính -------------------------------------------------------
+  // --- đường dẫn lồng nhau cho set(): "rw.stat.reborn", "inv.0.enh", "mats.misc.bk90", "inv[0].enh" ---
+  const BAD_KEY = new Set(["__proto__", "constructor", "prototype"]);
+  const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  function splitPath(p) {
+    const parts = String(p).replace(/\[(\w+)\]/g, ".$1").split(".");
+    if (parts.some(s => s === "")) throw new Error("Đường dẫn không hợp lệ: '" + p + "'");
+    const bad = parts.find(s => BAD_KEY.has(s));
+    if (bad) throw new Error("Khóa không được phép trong đường dẫn '" + p + "': " + bad);
+    return parts;
+  }
+  // Kiểm tra trước (không sửa gì): các nút trung gian đã tồn tại phải là object/array.
+  function checkPath(d, parts, full) {
+    let cur = d;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!hasOwn(cur, parts[i]) || cur[parts[i]] == null) return; // phần còn lại sẽ được tự tạo
+      cur = cur[parts[i]];
+      if (typeof cur !== "object") throw new Error("'" + parts.slice(0, i + 1).join(".") + "' là " + typeof cur + ", không đi sâu tiếp được tới '" + full + "'");
+    }
+  }
+  function getPath(d, parts) {
+    let cur = d;
+    for (const k of parts) { if (cur == null || typeof cur !== "object" || !hasOwn(cur, k)) return undefined; cur = cur[k]; }
+    return cur;
+  }
+  function assignPath(d, parts, value) {
+    let cur = d;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const k = parts[i];
+      if (!hasOwn(cur, k) || cur[k] == null) cur[k] = /^\d+$/.test(parts[i + 1]) ? [] : {}; // số ⇒ mảng, còn lại ⇒ object
+      cur = cur[k];
+    }
+    cur[parts[parts.length - 1]] = value;
+  }
+
+  // set({ gold:1e9, lvl:99 })                       khóa thường: ghi đè cả giá trị (nông)
+  // set({ "rw.stat.reborn":1, "mats.misc.bk90":5 })  khóa có dấu chấm: đi sâu vào object/array, tự tạo nút còn thiếu
+  // set({ "inv.0.enh":9 }) hoặc "inv[0].enh"          chỉ số mảng
   function set(patch) {
-    if (!patch || typeof patch !== "object") throw new Error("set({ gold:1e9, lvl:99 })");
+    if (!patch || typeof patch !== "object") throw new Error('set({ gold:1e9, lvl:99 }) hoặc set({ "rw.stat.reborn":1 })');
+    const cur = data();
+    // Pass 1: kiểm tra toàn bộ trước, lỗi thì không đổi gì cả.
+    const plan = Object.entries(patch).map(([key, value]) => {
+      if (!/[.[\]]/.test(key) || hasOwn(cur, key)) return { key, parts: [key], value, direct: true };
+      const parts = splitPath(key); checkPath(cur, parts, key);
+      return { key, parts, value, direct: false };
+    });
+    plan.forEach(p => { if (p.direct && BAD_KEY.has(p.key)) throw new Error("Khóa không được phép: " + p.key); });
+    // Pass 2: áp dụng.
     const d = edit();
-    Object.assign(d, patch);
+    const diff = {};
+    for (const p of plan) {
+      if (!p.direct) diff[p.key] = [getPath(d, p.parts), p.value];
+      assignPath(d, p.parts, p.value);
+    }
     console.log("[vldev] set", patch, "→ gọi commit() để ghi.");
+    for (const [k, [a, b]] of Object.entries(diff)) console.log("  " + k + ":", a, "→", b);
     return d;
   }
   function attr(patch) {
@@ -132,6 +189,8 @@
   //   - "trường vô hướng" (số/chuỗi/bool) = dùng trực tiếp cho set({...}).
   //   - "trường phức" = object/array, chỉ liệt kê tên + tóm tắt (vd attr, inv, eq).
   //   dump('attr')  → in sâu một trường object cụ thể.
+  //   dump() / dump('<tên>') trả về THAM CHIẾU vào bản nháp: sửa tại chỗ (vd dump('inv')[3].ktc.c = 500)
+  //   rồi commit() là được. Hoặc dùng set({ "inv.3.ktc.c": 500 }).
   function dump(key) {
     const d = data();
     if (key != null) { console.log("[vldev]", key, "=", d[key]); return d[key]; }
@@ -204,11 +263,30 @@
     setTimeout(() => hooks.forEach(([t, ev]) => t.removeEventListener(ev, rewrite)), 10000);
   }
 
+  // mk (mint key) dùng chuẩn 12 ký tự ngẫu nhiên như Dl() của app.js
+  const mkDl = () => (Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4))
+    .replace(/[^a-z0-9]/g, "0")
+    .padEnd(12, "0");
+
   // commit({ cloud:false }) = chỉ ghi local, không đẩy cloud.
   async function commit(opts) {
-    if (!S.state || !S.dirty) { console.warn("[vldev] Chưa có thay đổi nào (set/attr/add*) để commit."); return; }
+    if (!changed()) { console.warn("[vldev] Chưa có thay đổi nào (set/attr/add* hoặc sửa tại chỗ qua dump()) để commit."); return; }
     const o = Object.assign({ cloud: true }, opts || {});
     const d = S.state, key = S.key, slot = S.slot;
+    // Đồng bộ tên ô Kỳ Trân Các với số lượng ("Tên ×c") như game (x3), phòng khi ktc.c được sửa tay.
+    for (const it of d.inv || []) {
+      const def = it && it.ktc && KTC.find(x => x[0] === it.ktc.k);
+      if (def) it.n = ktcName(def, it.ktc.c | 0);
+    }
+    // Đảm bảo mọi trang bị Hoàng Kim / Bạch Kim (có cờ set) đều có mã mk chuẩn như client Dl()
+    const ensureMk = (it) => {
+      if (it && typeof it === "object" && it.set && !it.mk) it.mk = mkDl();
+    };
+    (d.inv || []).forEach(ensureMk);
+    Object.values(d.eq || {}).forEach(ensureMk);
+    (d.chest || []).forEach(ensureMk);
+    (d.epBox || []).forEach(ensureMk);
+
     d.cloudAt = Date.now();
     const sub = authInfo().sub; if (sub) d.netOwner = sub;
 
@@ -424,13 +502,14 @@
     const d = edit();
     let uid = d.uid | 0; if (uid <= 0) uid = (d.inv || []).reduce((m, x) => Math.max(m, (x && x.uid) | 0), 0) + 1;
     item.uid = uid; d.uid = uid + 1;
+    if (item && item.set && !item.mk) item.mk = mkDl();
     d.inv = d.inv || []; d.inv.push(item);
     return item;
   }
 
   function mkGold(t, o) {
     const item = {
-      uid: 0, d: t.d, k: t.k, n: t.n, ic: t.ic || "", lvl: t.lvl, s: t.s, price: t.price,
+      uid: 0, mk: mkDl(), d: t.d, k: t.k, n: t.n, ic: t.ic || "", lvl: t.lvl, s: t.s, price: t.price,
       base: (t.base || []).map(b => b.slice()), req: (t.req || []).map(r => r.slice()),
       r: 4, set: { kind: "gold", grp: t.grp, n1: t.n1 || 99, n2: t.n2 || 99, sid: t.sid },
     };
@@ -451,7 +530,7 @@
     const t = findGold(ref); const added = [];
     for (let c = 0; c < Math.max(1, o.count | 0); c++) added.push(pushInv(mkGold(t, o)));
     const it = added[0];
-    console.log("[vldev] +gold", it.n, "x" + added.length, "(" + GOLD_SLOT(it.d) + ", bộ grp " + it.set.grp + ", " + it.mag.length + " mag + " + it.ext.length + " ext) uid=" + added.map(x => x.uid).join(","), "→ commit() để ghi.");
+    console.log("[vldev] +gold", it.n, "x" + added.length, "(" + GOLD_SLOT(it.d) + ", bộ grp " + it.set.grp + ", " + it.mag.length + " mag + " + it.ext.length + " ext) uid=" + added.map(x => x.uid).join(","), "mk=" + added.map(x => x.mk).join(","), "→ commit() để ghi.");
     console.log("  mag:", it.mag.map(a => statName(a.a) + "=" + a.p.filter(v => v !== -1).join("/")).join(", "),
       it.ext.length ? "\n  ext:" : "", it.ext.map(a => statName(a.a) + "=" + a.p.filter(v => v !== -1).join("/")).join(", "));
     return added.length === 1 ? it : added;
@@ -629,6 +708,7 @@
     "\n  dump()                       xem các trường để build set()/attr()" +
     "\n  commit()                     ghi tất cả thay đổi (commit({cloud:false}) = chỉ local)" +
     "\n  set({gold:1e9, lvl:99})      →  commit()" +
+    "\n  set({'rw.stat.reborn':1})    khóa có dấu chấm đi sâu vào object/array (inv.0.enh, inv[0].enh)" +
     "\n  attr({str:500})              →  commit()" +
     "\n  knb(100000) / knb(50,'bkh')" +
     "\n  listItems({slot:'helm'})     liệt kê item (id = d:k:p)" +
