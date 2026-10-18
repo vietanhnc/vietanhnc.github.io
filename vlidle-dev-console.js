@@ -7,9 +7,11 @@
 *   attr({ str:500 })           sửa điểm thuộc tính (nhớ commit())
 *   commit()                    ký lại + đẩy cloud + ghi local + reload
 *                               (set/attr/add* chỉ sửa bản nháp trong console, PHẢI commit() mới có tác dụng)
-*   knb(100000)                 nạp KNB qua knb_sync (cộng thẳng)
-*   knb(50,'bkh')               bịa 50 boss thế giới → server quay số ra KNB
-*
+*   knb(100000)                 nạp KNB qua knb_sync — source mặc định "boss"
+*   source: boss | reward | book | buy   cộng thẳng, CÓ TRẦN NGÀY
+*           { boss:1500, reward:8000, book:5000, buy:10000 }
+*   source: bk | bkh                     số lượt boss, KHÔNG trần (server tự quay số)
+*   knb(50,'bkh')               bịa 50 lượt boss thế giới → server quay số ra KNB
 * Lưu ý: game tự lưu đè save khi reload (pagehide). commit() đăng ký thêm listener
 * ghi lại bản đã sửa SAU lượt autosave của game để bản sửa không bị mất.
 * Chỉ dùng trên tài khoản/môi trường đã được chủ game cho phép.
@@ -317,14 +319,24 @@
     location.reload();
   }
 
-  // source: "boss" cộng thẳng amount KNB | "bk"/"bkh" = số lượt boss (server quay số)
+  // source (khớp app.js):
+  //   "boss" | "reward" | "book" | "buy" → cộng thẳng KNB, CÓ TRẦN NGÀY (bảng SS của app.js)
+  //   "bk"   → số lượt boss thường        ┐ KHÔNG trần, server tự quay số ra KNB
+  //   "bkh"  → số lượt boss vàng/thế giới ┘
+  const KNB_CAP = { boss: 1500, reward: 8000, book: 5000, buy: 10000 };
+  const KNB_BOSS = { bk: "boss thường", bkh: "boss vàng/thế giới" };
   async function knb(amount, source = "boss") {
     const n = Math.max(0, Math.floor(+amount || 0));
     if (!n) throw new Error("knb(amount[, source])");
+    const src = String(source == null ? "boss" : source).toLowerCase();
+    if (!KNB_CAP[src] && !KNB_BOSS[src]) {
+      throw new Error("source phải là: boss | reward | book | buy (có trần ngày) hoặc bk | bkh (lượt boss)");
+    }
     const b0 = +(((await rpc("knb_sync", { e: {} })) || {}).bal || 0);
-    const r = (await rpc("knb_sync", { e: { [source]: n } })) || {};
+    const r = (await rpc("knb_sync", { e: { [src]: n } })) || {};
     const b1 = +(r.bal || 0);
-    console.log("[vldev] knb_sync {" + source + ":" + n + "}  bal", b0, "→", b1, "(Δ " + (b1 - b0) + ")",
+    const note = KNB_CAP[src] ? " (trần " + KNB_CAP[src] + "/ngày)" : " (lượt boss, server quay số)";
+    console.log("[vldev] knb_sync {" + src + ":" + n + "}" + note + "  bal", b0, "→", b1, "(Δ " + (b1 - b0) + ")",
       b1 - b0 <= 0 ? "⚠ không tăng (trần ngày?)" : "");
     return b1;
   }
@@ -333,36 +345,6 @@
   const SLOT = ["weapon", "weapon", "armor", "ring", "amulet", "boot", "belt", "helm", "cuff", "pendant", "horse"];
   const JX = () => { const J = (typeof window !== "undefined") && window.JX; if (!J || !J.items) throw new Error("Chưa thấy window.JX (vào game rồi hãy chạy)."); return J; };
   const statName = (id) => { try { return JX().attr[id] || ("#" + id); } catch { return "#" + id; } };
-
-  // Liệt kê item hoặc affix để lấy tham số cho addItem().
-  //   listItems()                       tất cả template (id = "d:k:p")
-  //   listItems({ slot:'helm', q:'long' })  lọc theo slot / tên
-  //   listItems({ affix:true })         bảng affix (idx + stat id + range)
-  function listItems(opts) {
-    const J = JX(); const o = Object.assign({ slot: null, k: null, q: null, affix: false, limit: 300 }, opts || {});
-    if (o.affix) {
-      const rows = (J.affix || []).map((a, idx) => ({
-        idx, a: a.a, stat: statName(a.a), ten: a.n, loai: a.pre ? "prefix" : "suffix",
-        s: a.s, lvl: a.lvl, p: JSON.stringify(a.p), mota: a.d,
-      })).filter(r => o.q ? (r.ten + r.stat + r.mota).toLowerCase().includes(String(o.q).toLowerCase()) : true);
-      console.log("[vldev] " + rows.length + " affix. 'idx' hoặc 'a'(stat id) dùng cho addItem({affix:[...]}).");
-      console.table(rows.slice(0, o.limit));
-      return rows;
-    }
-    const out = [];
-    (J.items || []).forEach((cat, d) => (cat.list || []).forEach(it => {
-      if (o.slot != null && SLOT[d] !== o.slot) return;
-      if (o.k != null && it.k !== o.k) return;
-      if (o.q && !(it.n || "").toLowerCase().includes(String(o.q).toLowerCase())) return;
-      out.push({
-        id: d + ":" + it.k + ":" + it.p, slot: SLOT[d], ten: it.n, lvl: it.lvl, he: it.s,
-        base: (it.base || []).map(b => statName(b[0]) + "=" + b[1] + (b[2] !== b[1] ? ".." + b[2] : "")).join(", "),
-      });
-    }));
-    console.log("[vldev] " + out.length + " item. id = \"d:k:p\" → addItem(\"d:k:p\", {...}).");
-    console.table(out.slice(0, o.limit));
-    return out;
-  }
 
   function findTpl(id) {
     const J = JX(); let d, k, p;
@@ -451,33 +433,6 @@
     const [lo, hi] = g.p[0] || [0, 0];
     return statName(g.a) + "=" + (lo === hi ? lo : lo + ".." + hi);
   }).join(", ");
-
-  // Liệt kê đồ hoàng kim. i = chỉ số trong JX.sets.gold, dùng cho addGold(i).
-  //   listGold({ q:'Mộng Long' })            lọc theo tên
-  //   listGold({ fac:'wudu', slot:'weapon' })  lọc theo môn phái / slot
-  //   listGold({ grp:1 })                      cả bộ (grp) số 1
-  function listGold(opts) {
-    const J = JX(); const o = Object.assign({ q: null, slot: null, d: null, fac: null, grp: null, lvl: null, limit: 300 }, opts || {});
-    const fac = findFaction(o.fac);
-    const out = [];
-    (J.sets.gold || []).forEach((t, i) => {
-      if (o.d != null && t.d !== o.d) return;
-      if (o.slot != null && GOLD_SLOT(t.d) !== o.slot) return;
-      if (o.grp != null && t.grp !== o.grp) return;
-      if (o.lvl != null && t.lvl !== o.lvl) return;
-      if (fac && reqVal(t, 39) !== fac.id) return;
-      if (o.q && !(t.n || "").toLowerCase().includes(String(o.q).toLowerCase())) return;
-      const f = (J.factions || []).find(x => x.id === reqVal(t, 39));
-      out.push({
-        i, grp: t.grp, sid: t.sid, d: t.d, slot: GOLD_SLOT(t.d), ten: t.n, lvl: t.lvl,
-        he: (J.series || [])[t.s] || t.s, fac: f ? f.key : "-", bo: (t.n1 || 99) + "/" + (t.n2 || 99),
-        mag: geText(t.mag), ext: geText(t.ext),
-      });
-    });
-    console.log("[vldev] " + out.length + " đồ hoàng kim. i → addGold(i) · grp → addGoldSet(grp).");
-    console.table(out.slice(0, o.limit));
-    return out;
-  }
 
   // ref: số (chỉ số i), tên (khớp chính xác hoặc duy nhất một phần), hoặc { grp, d }.
   function findGold(ref) {
@@ -570,6 +525,7 @@
     ["ldp", "Lệnh Bài Đổi Phái", "img/ep/ldp.png"],
     ["dgt", "Thẻ Đổi Giới Tính", "img/ep/ldp.png"],
     ["rngua", "Rương Ngựa", "img/ep/box2.png"],
+    ["thbt", "Tinh Hồng Bảo Thạch", "img/ep/thbt.png"],
     ["dtbk", "Đại Thành Bí Kíp", "img/ep/dtbk.png"],
   ];
   const ktcName = (def, c) => def[1] + (c > 1 ? " ×" + c : "");
@@ -581,16 +537,8 @@
     return def;
   }
 
-  //   listKtc()                         danh sách key
   //   addKtc("qht", 20)                 thêm 20 Quế Hoa Tửu vào hành trang
   // Hành trang đầy (INV_MAX) thì dừng như game; trả về số lượng thực thêm.
-  function listKtc() {
-    const rows = KTC.map(x => ({ key: x[0], ten: x[1], ic: x[2] }));
-    console.log("[vldev] " + rows.length + " vật phẩm Kỳ Trân Các. addKtc(key, số lượng) → commit().");
-    console.table(rows);
-    return rows;
-  }
-
   function addKtc(key, count) {
     const n = count == null ? 1 : Math.floor(+count);
     if (!(n > 0)) throw new Error("addKtc(key[, count > 0])");
@@ -616,13 +564,14 @@
   //   ore   đá thuộc tính "vị trí:stat:cấp[:hệ]"  addMat("ore", "1:101:3:2", 5)  hoặc {place,a,lvl,s}
   //         vị trí chẵn (0,2,4) là tiền tố, lẻ (1,3,5) là hậu tố và BẮT BUỘC có hệ 0..4
   //   shard Mảnh Hoàng Kim theo tên món           addMat("shard", "Phục Ma Tử Kim Côn", 9)
-  //   misc  mys, ttt, ltt, lmt, lb, bk90, ldt, ldp, dgt, dtbk, rngua, vlmt, ttk
+  //   misc  mys, ttt, ltt, lmt, lb, bk90, ldt, ldp, dgt, dtbk, rngua, vlmt, ttk, thbt
   // count âm = trừ bớt, về 0 thì xóa khóa.
   const ORE_PLACES = ["Huyền Thiết Khoáng", "Khổng Tước Thạch", "Mật Ngân Khoáng", "Phù Dung Thạch", "Chu Sa Khoáng", "Chung Nhũ Thạch"];
   const MISC = {
     mys: "Thần Bí Khoáng Thạch", ttt: "Tử Thủy Tinh", ltt: "Lục Thủy Tinh", lmt: "Lam Thủy Tinh", lb: "Lệnh Bài Sát Thủ",
     bk90: "Bí Kíp 90", ldt: "Lệnh Bài Dã Tẩu", ldp: "Lệnh Bài Đổi Phái", dgt: "Thẻ Đổi Giới Tính",
     dtbk: "Đại Thành Bí Kíp", rngua: "Rương Ngựa", vlmt: "Võ Lâm Mật Tịch", ttk: "Tẩy Tủy Kinh",
+    thbt: "Tinh Hồng Bảo Thạch",
   };
   const oreStats = (place) => [...new Set((JX().affixLevel || [])
     .filter(a => a.pre === (place % 2 === 0 ? 1 : 0) && a.lvl === 1).map(a => a.a))];
@@ -648,7 +597,7 @@
       if (!Number.isInteger(place) || place < 0 || place >= ORE_PLACES.length) throw new Error("Đá: vị trí phải từ 0 đến " + (ORE_PLACES.length - 1));
       if (!oreStats(place).includes(a)) throw new Error("Đá: stat " + a + " không hợp lệ cho " + ORE_PLACES[place] + ". Hợp lệ: " + oreStats(place).map(x => x + "=" + statName(x)).join(", "));
       if (!Number.isInteger(lvl) || lvl < 1 || lvl > 10) throw new Error("Đá: cấp phải từ 1 đến 10");
-      let k = place + ":" + a + ":" + lvl, se = "";
+      let k = place + ":" + a + ":0", se = "";
       if (place % 2) {
         s = +s;
         if (!Number.isInteger(s) || s < 0 || s > 4) throw new Error("Đá hậu tố (vị trí lẻ) cần hệ 0..4, ví dụ \"" + k + ":2\"");
@@ -682,26 +631,9 @@
     return m[kind][k] || 0;
   }
 
-  //   listMat({ kind:'ore', q:'sức mạnh' })   liệt kê nguyên liệu hợp lệ
-  function listMat(opts) {
-    const o = Object.assign({ kind: null, q: null, limit: 300 }, opts || {});
-    const rows = [];
-    if (!o.kind || o.kind === "ht") for (let l = 1; l <= 10; l++) rows.push({ kind: "ht", key: String(l), ten: "Huyền Tinh cấp " + l });
-    if (!o.kind || o.kind === "ore") ORE_PLACES.forEach((nm, place) => oreStats(place).forEach(a => {
-      const af = (JX().affixLevel || []).find(x => x.a === a && x.lvl === 1);
-      rows.push({ kind: "ore", key: place + ":" + a + ":<cấp>" + (place % 2 ? ":<hệ>" : ""), ten: nm + " · " + (af ? af.n : statName(a)) + " (" + statName(a) + ")" });
-    }));
-    if (!o.kind || o.kind === "shard") shardNames().forEach(n => rows.push({ kind: "shard", key: n, ten: "Mảnh " + n }));
-    if (!o.kind || o.kind === "misc") Object.keys(MISC).forEach(k => rows.push({ kind: "misc", key: k, ten: MISC[k] }));
-    const out = o.q ? rows.filter(r => (r.key + " " + r.ten).toLowerCase().includes(String(o.q).toLowerCase())) : rows;
-    console.log("[vldev] " + out.length + " nguyên liệu. addMat(kind, key, số lượng) → commit().");
-    console.table(out.slice(0, o.limit));
-    return out;
-  }
-
   // --- expose global -------------------------------------------------------
-  const api = { dump, set, attr, knb, listItems, addItem, listGold, addGold, addGoldSet, listKtc, addKtc, listMat, addMat, commit, load, _state: () => S.state };
-  for (const k of ["dump", "set", "attr", "knb", "listItems", "addItem", "listGold", "addGold", "addGoldSet", "listKtc", "addKtc", "listMat", "addMat", "commit"]) { try { window[k] = api[k]; } catch {} }
+  const api = { dump, set, attr, knb, addItem, addGold, addGoldSet, addKtc, addMat, commit, load, _state: () => S.state };
+  for (const k of ["dump", "set", "attr", "knb", "addItem", "addGold", "addGoldSet", "addKtc", "addMat", "commit"]) { try { window[k] = api[k]; } catch {} }
   try { window.vldev = api; } catch {}
 
   console.log("%c[vldev] sẵn sàng (không cần await):", "color:#7fe08a;font-weight:bold",
@@ -710,14 +642,11 @@
     "\n  set({gold:1e9, lvl:99})      →  commit()" +
     "\n  set({'rw.stat.reborn':1})    khóa có dấu chấm đi sâu vào object/array (inv.0.enh, inv[0].enh)" +
     "\n  attr({str:500})              →  commit()" +
-    "\n  knb(100000) / knb(50,'bkh')" +
-    "\n  listItems({slot:'helm'})     liệt kê item (id = d:k:p)" +
-    "\n  listItems({affix:true})      liệt kê affix (idx / stat id)" +
+    "\n  knb(100000) / knb(50,'bkh')  source: boss|reward|book|buy (trần ngày) hoặc bk|bkh (lượt boss)" +
     "\n  addItem('7:0:3',{s:4,max:true,affix:[12,40]})  →  commit()" +
-    "\n  listGold({fac:'wudu',slot:'weapon'})  liệt kê đồ hoàng kim (i / grp)" +
     "\n  addGold(0) random trong khoảng · addGold(0,{max:true}) luôn max / addGoldSet(1)  →  commit()" +
-    "\n  listKtc() / addKtc('qht',20)          vật phẩm Kỳ Trân Các vào hành trang" +
-    "\n  listMat({kind:'ore'}) / addMat('ht',5,10)  nguyên liệu (ht | ore | shard | misc)");
+    "\n  addKtc('qht',20)             vật phẩm Kỳ Trân Các vào hành trang" +
+    "\n  addMat('ht',5,10)            nguyên liệu (ht | ore | shard | misc)");
   try { load(); } catch (e) { console.warn("[vldev]", e.message); }
 })();
  
